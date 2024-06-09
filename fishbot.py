@@ -2,7 +2,6 @@ import os
 import discord
 import youtube_dl
 import phrases
-import fish_commands as fish
 from dotenv import load_dotenv
 from discord.ext import commands
 
