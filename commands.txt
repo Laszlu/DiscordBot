@@ -1,3 +1,7 @@
---hello
---help
---admins
+hello
+!help
+!admins
+!server
+!join
+!introduction
+!play
