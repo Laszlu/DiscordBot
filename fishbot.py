@@ -1,7 +1,9 @@
+import asyncio
 import os
 import discord
-import youtube_dl
+import yt_dlp
 import phrases
+import nacl
 from dotenv import load_dotenv
 from discord.ext import commands
 
@@ -11,7 +13,7 @@ intents.message_content = True
 intents.presences = True
 intents.members = True
 
-
+# overwriting default help command
 help_command = commands.DefaultHelpCommand(no_category='Commands')
 
 # creating instance of client and bot to connect with discord
@@ -22,6 +24,48 @@ bot = commands.Bot(command_prefix=commands.when_mentioned_or('!'), intents=inten
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 GUILD = os.getenv('DISCORD_GUILD')
+
+# youtube setup
+yt_dlp.utils.bug_reports_message = lambda: ''
+
+ytdl_format_options = {
+    'format': 'bestaudio',
+    'noplaylist': True
+}
+
+ffmpeg_options = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn'
+}
+
+ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+
+
+class YTDLSource(discord.PCMVolumeTransformer):
+    def __init__(self, source, *, data, volume=0.5):
+        super().__init__(source, volume)
+        self.data = data
+        self.title = data.get('title')
+        self.url = ""
+
+    @classmethod
+    async def from_url(cls, url, *, loop=None, stream=False):
+        loop = loop or asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        if 'entries' in data:
+            # take first item from a playlist
+            data = data['entries'][0]
+        filename = data['title'] if stream else ytdl.prepare_filename(data)
+        return filename
+
+
+# global vars for playing music
+queue = []
+
+
+# global functions
+def check_permission(ctx):
+    return any(role.name == 'gago' for role in ctx.author.roles)
 
 
 @bot.event
@@ -98,6 +142,13 @@ async def get_server_info(ctx):
     await ctx.send(embed=embed)
 
 
+@bot.command(name='clear', help='I clear a given amount of chat messages')
+async def clear(ctx, amount):
+    print('Running Command: clear')
+
+    await ctx.channel.purge(limit=int(amount))
+
+
 @bot.command(name='join', help='I join your voice channel')
 async def join(ctx):
     print('Running Command: join')
@@ -106,18 +157,103 @@ async def join(ctx):
         await ctx.send('You are not connected to a voice channel!')
         return
     else:
+        v_client = ctx.voice_client
         channel = ctx.author.voice.channel
-        await channel.connect()
+        if v_client and v_client.is_connected:
+            await v_client.move_to(channel)
+        else:
+            await channel.connect()
+
+
+@bot.command(name='leave', help='I leave the voice channel')
+async def leave(ctx):
+    print('Running Command: leave')
+
+    v_client = ctx.voice_client
+    if v_client and v_client.is_connected:
+        await v_client.disconnect()
+    else:
+        ctx.send('I am not connected to a voice channel!')
 
 
 @bot.command(name='play', help='I play the given music')
-async def play(ctx, url):
+async def play(ctx, url=None):
     print('Running Command: play')
 
-    if not ctx.author.role == 'gago':
-        await ctx.send('You are not allowed to use this command.')
+    discord.opus.load_opus('/opt/homebrew/Cellar/opus/1.5.2/lib/libopus.0.dylib')
+
+    if check_permission(ctx):
+        try:
+            v_client = ctx.voice_client
+
+            if not v_client.is_playing():
+
+                if url is None:
+
+                    if queue[0] is None:
+                        ctx.send('You didn´t provide a link')
+                        return
+                    else:
+                        yt_url = queue[0]
+
+                else:
+                    if not ("youtube.com/watch?" in url or "https:youtu.be/" in url):
+                        ctx.send('This is not music from Youtube')
+                        return
+                    info = ytdl.extract_info(url, download=False)
+                    yt_url = info['url']
+
+                # after= needed to keep playing the queue
+                v_client.play(discord.FFmpegPCMAudio(yt_url, **ffmpeg_options))
+                v_client.is_playing()
+                queue.remove(queue[0])
+                await ctx.send('Bot is playing')
+
+            else:
+                await ctx.send('I am already playing music, use !queue to add to queue')
+                return
+
+        except Exception as e:
+            print(e)
+            print(e.__context__)
+            await ctx.send("I am not connected to a voice channel, please use !join first.")
+
+    else:
+        await ctx.send(f'{ctx.author.mention}: You are not allowed to use this command.')
         return
-    #else:
+
+
+@bot.command(name='stop', help='I stop the current music')
+async def stop(ctx):
+    print('Running Command: stop')
+
+    if check_permission(ctx):
+        v_client = ctx.voice_client
+
+        if v_client.is_playing:
+            v_client.stop()
+        else:
+            await ctx.send('I am not playing music')
+
+
+@bot.command(name='queue', help='I queue the given music')
+async def queue(ctx, url=None):
+    print('Running Command: queue')
+
+    if check_permission(ctx):
+        if url is None:
+            ctx.send('You have to provide a url for me to queue it')
+            return
+
+        if not ("youtube.com/watch?" in url or "https:youtu.be/" in url):
+            ctx.send('This is not music from Youtube')
+            return
+
+        info = ytdl.extract_info(url, download=False)
+        yt_url = info['url']
+        queue.append(yt_url)
+
+        await ctx.send('Song queued')
 
 
 bot.run(TOKEN)
